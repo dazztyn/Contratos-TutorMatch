@@ -1,0 +1,108 @@
+// Contrato gRPC del servicio de Usuarios.
+// Lo implementa Usuarios (Go, Pablo) y lo consumen el BFF, Sesiones y el agente.
+//
+// BORRADOR para revisar en equipo.
+//
+// Todos son estudiantes; un usuario es tutor de un ramo cuando lo declaró aprobado.
+//
+// Los errores viajan como códigos de estado gRPC, no como campos de la respuesta:
+//   NOT_FOUND          el usuario o el ramo no existe.
+//   ALREADY_EXISTS     ya hay un usuario con ese email.
+//   UNAUTHENTICATED    email o contraseña incorrectos.
+//   INVALID_ARGUMENT   faltan datos o tienen mal formato.
+syntax = "proto3";
+
+package tutorias.usuarios.v1;
+
+option go_package = "github.com/tutormatch/usuarios/gen/usuariosv1";
+
+service UsuariosService {
+  // Usados por el BFF.
+  rpc Registrar(RegistrarRequest) returns (Usuario);
+  // Devuelve un JWT firmado (HS256) con el id del usuario en "sub".
+  // El BFF lo verifica con el mismo secreto (variable JWT_SECRET, Secret de Kubernetes).
+  rpc IniciarSesion(IniciarSesionRequest) returns (IniciarSesionResponse);
+  rpc ObtenerUsuario(ObtenerUsuarioRequest) returns (Usuario);
+  // En lote: el BFF muestra el nombre del tutor y del estudiante de muchas sesiones con una sola llamada.
+  // Los ids que no existen se omiten de la respuesta, sin error.
+  rpc ObtenerUsuarios(ObtenerUsuariosRequest) returns (ObtenerUsuariosResponse);
+  // Reemplaza la lista completa de ramos aprobados del usuario.
+  rpc ActualizarRamos(ActualizarRamosRequest) returns (Usuario);
+  rpc BuscarTutores(BuscarTutoresRequest) returns (BuscarTutoresResponse);
+  // Catálogo de ramos, para los selectores del front.
+  rpc ListarRamos(ListarRamosRequest) returns (ListarRamosResponse);
+
+  // Usado por Sesiones antes de crear una reserva.
+  rpc VerificarTutorRamo(VerificarTutorRamoRequest) returns (VerificarTutorRamoResponse);
+}
+
+message Ramo {
+  // Ej. "MAT1610". Es el mismo ramo_codigo que usan Sesiones y Material.
+  string codigo = 1;
+  string nombre = 2;
+}
+
+message Usuario {
+  // UUID. Es el tutor_id / estudiante_id que guardan Sesiones y Material.
+  string id = 1;
+  string nombre = 2;
+  string email = 3;
+  repeated Ramo ramos_aprobados = 4;
+}
+
+message RegistrarRequest {
+  string nombre = 1;
+  string email = 2;
+  string password = 3;
+}
+
+message IniciarSesionRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message IniciarSesionResponse {
+  string token = 1;
+  Usuario usuario = 2;
+}
+
+message ObtenerUsuarioRequest {
+  string id = 1;
+}
+
+message ObtenerUsuariosRequest {
+  repeated string ids = 1;
+}
+
+message ObtenerUsuariosResponse {
+  repeated Usuario usuarios = 1;
+}
+
+message ActualizarRamosRequest {
+  string usuario_id = 1;
+  repeated string ramo_codigos = 2;
+}
+
+message BuscarTutoresRequest {
+  string ramo_codigo = 1;
+}
+
+message BuscarTutoresResponse {
+  repeated Usuario tutores = 1;
+}
+
+message ListarRamosRequest {}
+
+message ListarRamosResponse {
+  repeated Ramo ramos = 1;
+}
+
+message VerificarTutorRamoRequest {
+  string tutor_id = 1;
+  string ramo_codigo = 2;
+}
+
+message VerificarTutorRamoResponse {
+  bool existe = 1;
+  bool aprobo_ramo = 2;
+}

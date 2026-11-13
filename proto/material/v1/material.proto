@@ -1,0 +1,101 @@
+// Contrato gRPC del servicio de Material y Evaluaciones.
+// Lo implementa Material (NestJS, Ien) y lo consumen el BFF y el agente.
+//
+// BORRADOR para revisar en equipo.
+//
+// El material pertenece a un tutor y a un ramo; opcionalmente se asocia a una sesión.
+//
+// Quién ve el material (opción B, "solo sus tutorados"):
+//   - El tutor siempre ve su propio material.
+//   - Un estudiante ve el material de un tutor en un ramo si tiene al menos una sesión
+//     con ese tutor en ese ramo que no esté CANCELADA.
+//   Material lo decide con su propia copia de las sesiones, armada desde los eventos
+//   Kafka sesion.creada, sesion.finalizada y sesion.cancelada (ver eventos/).
+//
+// Dependencias de Material:
+//   - Usuarios.VerificarTutorRamo antes de aceptar un SubirMaterial.
+//   - Sesiones.VerificarParticipacion antes de aceptar una evaluación.
+//
+// Los errores viajan como códigos de estado gRPC, no como campos de la respuesta:
+//   NOT_FOUND            la sesión o el material no existe.
+//   ALREADY_EXISTS       el estudiante ya evaluó esa sesión.
+//   PERMISSION_DENIED    quien sube material no es tutor aprobado de ese ramo,
+//                        o la sesión indicada no es de ese tutor.
+//   FAILED_PRECONDITION  la sesión no está FINALIZADA o el estudiante no participó.
+//   INVALID_ARGUMENT     faltan datos o la nota está fuera de 1..5.
+syntax = "proto3";
+
+package tutorias.material.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service MaterialService {
+  rpc SubirMaterial(SubirMaterialRequest) returns (Material);
+  // Devuelve solo el material que usuario_id puede ver; lo demás se omite, sin error.
+  rpc ListarMaterial(ListarMaterialRequest) returns (ListarMaterialResponse);
+
+  rpc Evaluar(EvaluarRequest) returns (Evaluacion);
+  rpc ListarEvaluaciones(ListarEvaluacionesRequest) returns (ListarEvaluacionesResponse);
+}
+
+message Material {
+  string id = 1;
+  // Dueño del material.
+  string tutor_id = 2;
+  string ramo_codigo = 3;
+  // Vacío si es material general del ramo.
+  string sesion_id = 4;
+  string titulo = 5;
+  // Texto o Markdown. Es lo que lee el agente para generar un quiz.
+  string contenido = 6;
+  google.protobuf.Timestamp creado_en = 7;
+}
+
+message SubirMaterialRequest {
+  string tutor_id = 1;
+  string ramo_codigo = 2;
+  // Opcional.
+  string sesion_id = 3;
+  string titulo = 4;
+  string contenido = 5;
+}
+
+// tutor_id y ramo_codigo son filtros opcionales: un campo vacío no filtra.
+message ListarMaterialRequest {
+  string tutor_id = 1;
+  string ramo_codigo = 2;
+  // Quién consulta. Obligatorio: define qué material es visible.
+  string usuario_id = 3;
+}
+
+message ListarMaterialResponse {
+  repeated Material materiales = 1;
+}
+
+message Evaluacion {
+  string id = 1;
+  string sesion_id = 2;
+  string tutor_id = 3;
+  string estudiante_id = 4;
+  // Entero de 1 a 5.
+  int32 nota = 5;
+  string comentario = 6;
+  google.protobuf.Timestamp creada_en = 7;
+}
+
+message EvaluarRequest {
+  string sesion_id = 1;
+  string estudiante_id = 2;
+  int32 nota = 3;
+  string comentario = 4;
+}
+
+message ListarEvaluacionesRequest {
+  string tutor_id = 1;
+}
+
+message ListarEvaluacionesResponse {
+  repeated Evaluacion evaluaciones = 1;
+  // 0 si el tutor no tiene evaluaciones.
+  double promedio = 2;
+}

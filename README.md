@@ -1,4 +1,4 @@
-# tutormatch-contracts
+# Contratos-TutorMatch
 
 Contratos compartidos de TutorMatch. No se despliega: cada servicio lo incluye como submódulo de git en la carpeta `contracts/`.
 
@@ -19,6 +19,15 @@ En GitHub Actions, el checkout necesita `submodules: true`.
 | `proto/material/v1/material.proto` | Material (Ien) | BFF, agente |
 | `eventos/sesion.*.json` | Sesiones publica | Material consume |
 | `rest/agente.md` | Agente (Pablo) | BFF |
+
+## Propuestas en revisión
+
+`propuestas/` tiene las decisiones acordadas en equipo y los contratos propuestos que todavía no reemplazan a los de `proto/`. Leerlas antes de implementar o cambiar esos servicios:
+
+- `propuestas/usuarios.md`: un usuario alumno y tutor a la vez, login único con dos portales, `es_tutor`, inscripción y retiro de ramos; esquema de PostgreSQL y `usuarios.proto` propuesto.
+- `propuestas/material.md`: archivos y avisos, quién ve el material, evaluaciones anónimas y promedio de tutores; modelo de MongoDB y `material.proto` propuesto.
+
+Cuando una propuesta se aprueba, su `.proto` reemplaza al de `proto/` en un PR aparte.
 
 ## Kafka
 

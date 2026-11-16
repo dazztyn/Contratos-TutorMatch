@@ -1,14 +1,32 @@
 // Contrato gRPC del servicio de Sesiones.
-// Lo implementa Sesiones (Spring Boot) y lo consumen el BFF y Material.
+// Lo implementa Sesiones (Spring Boot, Vicente) y lo consumen el BFF, Material y el agente.
 //
-// Implementado por Sesiones (Vicente).
+// Disponibilidad: el tutor marca casillas con fecha concreta, cada una para un ramo. Una
+// casilla es un bloque de clase de 90 minutos, de lunes a viernes, que empieza a una de
+// estas horas de Chile (America/Santiago): 08:10, 09:55, 11:40, 14:30, 16:15 o 18:00.
+// Los Timestamp viajan en UTC; Sesiones convierte a hora de Chile solo para validar.
+//
+// Una reserva (sesión) ocupa exactamente una casilla libre: misma fecha, tutor y ramo, sin
+// otra sesión PENDIENTE o CONFIRMADA encima.
+//
+// Ciclo de vida: PENDIENTE -> CONFIRMADA -> FINALIZADA, o CANCELADA. Una tarea programada
+// finaliza las CONFIRMADA cuyo fin pasó y cancela las PENDIENTE cuyo inicio pasó.
+//
+// tutor_id, estudiante_id y usuario_id los pone el BFF a partir del JWT.
+//
+// Dependencias de Sesiones: Usuarios.ValidarTutorRamo al marcar una casilla y al crear una sesión.
 //
 // Los errores viajan como códigos de estado gRPC, no como campos de la respuesta:
-//   NOT_FOUND            la sesión no existe.
-//   ALREADY_EXISTS       el tutor ya tiene una sesión PENDIENTE o CONFIRMADA en ese horario.
-//   FAILED_PRECONDITION  el tutor no existe o no aprobó el ramo, o la transición de estado no es válida.
-//   PERMISSION_DENIED    el usuario no participa en la sesión que intenta modificar.
-//   INVALID_ARGUMENT     faltan datos o el horario es inválido (fin <= inicio).
+//   NOT_FOUND            la sesión o la casilla no existe.
+//   ALREADY_EXISTS       la casilla se solapa con otra del mismo tutor, o alguno de los dos
+//                        participantes ya tiene una sesión activa en ese horario.
+//   FAILED_PRECONDITION  el tutor no tiene ese ramo activo; no hay una casilla libre para ese
+//                        horario; la transición de estado no es válida; la casilla que se
+//                        quiere desmarcar tiene una sesión PENDIENTE o CONFIRMADA.
+//   PERMISSION_DENIED    el usuario no participa en la sesión, o la casilla no es suya.
+//   INVALID_ARGUMENT     faltan datos; el horario no es un bloque válido o ya pasó; alguien
+//                        intenta reservarse a sí mismo.
+//   UNAVAILABLE          Usuarios no responde.
 syntax = "proto3";
 
 package tutorias.sesiones.v1;
@@ -19,24 +37,31 @@ option java_multiple_files = true;
 option java_package = "cl.tutorias.sesiones.grpc";
 
 service SesionesService {
-  // Usados por el BFF.
   rpc CrearSesion(CrearSesionRequest) returns (Sesion);
   rpc ObtenerSesion(ObtenerSesionRequest) returns (Sesion);
   rpc ListarSesiones(ListarSesionesRequest) returns (ListarSesionesResponse);
-  // PENDIENTE -> CONFIRMADA.
+  // PENDIENTE -> CONFIRMADA. Solo el tutor de la sesión.
   rpc ConfirmarSesion(CambiarEstadoRequest) returns (Sesion);
-  // PENDIENTE o CONFIRMADA -> CANCELADA.
+  // PENDIENTE o CONFIRMADA -> CANCELADA. El tutor (rechazar) o el alumno.
   rpc CancelarSesion(CambiarEstadoRequest) returns (Sesion);
-  // CONFIRMADA -> FINALIZADA.
+  // CONFIRMADA -> FINALIZADA. Normalmente lo hace la tarea programada; el tutor puede adelantarlo.
   rpc FinalizarSesion(CambiarEstadoRequest) returns (Sesion);
+
+  // El tutor marca una casilla para un ramo.
+  rpc MarcarCasilla(MarcarCasillaRequest) returns (BloqueDisponibilidad);
+  // El tutor desmarca una de sus casillas sin sesión activa encima.
+  rpc DesmarcarCasilla(DesmarcarCasillaRequest) returns (DesmarcarCasillaResponse);
+  // Casillas de un tutor en un rango, libres u ocupadas (campo libre).
   rpc ObtenerDisponibilidad(ObtenerDisponibilidadRequest) returns (ObtenerDisponibilidadResponse);
+  // Casillas libres de todos los tutores de un ramo en un rango, para el buscador del alumno.
+  rpc BuscarDisponibilidad(BuscarDisponibilidadRequest) returns (ObtenerDisponibilidadResponse);
 
   // Usado por Material antes de aceptar una evaluación.
   rpc VerificarParticipacion(VerificarParticipacionRequest) returns (VerificarParticipacionResponse);
 }
 
 enum EstadoSesion {
-  // proto3 exige un valor 0; nunca se guarda ni se devuelve.
+  // proto3 exige un valor 0; nunca se guarda ni se devuelve. En los filtros significa "todos".
   ESTADO_SESION_DESCONOCIDO = 0;
   PENDIENTE = 1;
   CONFIRMADA = 2;
@@ -49,13 +74,14 @@ message Sesion {
   string tutor_id = 2;
   string estudiante_id = 3;
   string ramo_codigo = 4;
-  // El TSTZRANGE de la base se expone como [inicio, fin).
+  // Rango [inicio, fin): siempre un bloque de 90 minutos.
   google.protobuf.Timestamp inicio = 5;
   google.protobuf.Timestamp fin = 6;
   EstadoSesion estado = 7;
   google.protobuf.Timestamp creada_en = 8;
 }
 
+// Debe coincidir con una casilla libre del tutor para ese ramo y ese horario.
 message CrearSesionRequest {
   string tutor_id = 1;
   string estudiante_id = 2;
@@ -68,10 +94,14 @@ message ObtenerSesionRequest {
   string id = 1;
 }
 
-// Filtros opcionales: un campo vacío no filtra.
+// Todos los filtros son opcionales: un campo vacío no filtra.
 message ListarSesionesRequest {
   string tutor_id = 1;
   string estudiante_id = 2;
+  EstadoSesion estado = 3;
+  // Sesiones que empiezan en [desde, hasta).
+  google.protobuf.Timestamp desde = 4;
+  google.protobuf.Timestamp hasta = 5;
 }
 
 message ListarSesionesResponse {
@@ -84,20 +114,51 @@ message CambiarEstadoRequest {
   string usuario_id = 2;
 }
 
+// Una casilla de disponibilidad: un bloque de 90 minutos para un ramo.
 message BloqueDisponibilidad {
+  // Eliminados: el patrón semanal (día y horas locales) se reemplazó por fechas concretas.
+  reserved 2, 3, 4;
+  reserved "dia", "hora_ini", "hora_fin";
+
   string tutor_id = 1;
-  // Día de la semana ISO: 1 = lunes ... 7 = domingo.
-  int32 dia = 2;
-  // Hora local en formato "HH:mm".
-  string hora_ini = 3;
-  string hora_fin = 4;
+  string id = 5;
+  string ramo_codigo = 6;
+  google.protobuf.Timestamp inicio = 7;
+  google.protobuf.Timestamp fin = 8;
+  // false si tiene encima una sesión PENDIENTE o CONFIRMADA.
+  bool libre = 9;
 }
+
+message MarcarCasillaRequest {
+  string tutor_id = 1;
+  string ramo_codigo = 2;
+  // Inicio de un bloque válido; el fin es siempre inicio + 90 minutos.
+  google.protobuf.Timestamp inicio = 3;
+}
+
+message DesmarcarCasillaRequest {
+  string id = 1;
+  string tutor_id = 2;
+}
+
+message DesmarcarCasillaResponse {}
 
 message ObtenerDisponibilidadRequest {
   string tutor_id = 1;
+  // Casillas que empiezan en [desde, hasta). Obligatorios.
+  google.protobuf.Timestamp desde = 2;
+  google.protobuf.Timestamp hasta = 3;
+}
+
+message BuscarDisponibilidadRequest {
+  string ramo_codigo = 1;
+  // Casillas que empiezan en [desde, hasta). Obligatorios.
+  google.protobuf.Timestamp desde = 2;
+  google.protobuf.Timestamp hasta = 3;
 }
 
 message ObtenerDisponibilidadResponse {
+  // Ordenadas por inicio.
   repeated BloqueDisponibilidad bloques = 1;
 }
 
@@ -109,4 +170,6 @@ message VerificarParticipacionRequest {
 message VerificarParticipacionResponse {
   bool finalizada = 1;
   bool participo = 2;
+  string tutor_id = 3;
+  string ramo_codigo = 4;
 }

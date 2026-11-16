@@ -1,28 +1,39 @@
 // Contrato gRPC del servicio de Material y Evaluaciones.
-// Lo implementa Material (NestJS, Ien) y lo consumen el BFF y el agente.
+// Lo implementa Material (NestJS + MongoDB, Ien) y lo consume el BFF.
 //
-// BORRADOR para revisar en equipo.
+// El material pertenece a un tutor y a un ramo. Hay dos tipos: ARCHIVO (PDF, PNG o JPEG,
+// hasta 10 MB) y AVISO (solo texto).
 //
-// El material pertenece a un tutor y a un ramo; opcionalmente se asocia a una sesión.
-//
-// Quién ve el material (opción B, "solo sus tutorados"):
+// Quién ve el material:
 //   - El tutor siempre ve su propio material.
-//   - Un estudiante ve el material de un tutor en un ramo si tiene al menos una sesión
+//   - Un alumno ve el material de un tutor en un ramo si tiene o tuvo al menos una sesión
 //     con ese tutor en ese ramo que no esté CANCELADA.
 //   Material lo decide con su propia copia de las sesiones, armada desde los eventos
 //   Kafka sesion.creada, sesion.finalizada y sesion.cancelada (ver eventos/).
 //
+// Las evaluaciones son anónimas: Material guarda quién la escribió, pero solo se lo
+// devuelve al propio alumno (ListarMisEvaluaciones). Nunca expone estudiante_id ni
+// sesion_id en las vistas públicas.
+//
+// usuario_id, tutor_id y estudiante_id los pone el BFF a partir del JWT.
+//
 // Dependencias de Material:
-//   - Usuarios.VerificarTutorRamo antes de aceptar un SubirMaterial.
+//   - Usuarios.ValidarTutorRamo antes de aceptar un SubirMaterial.
 //   - Sesiones.VerificarParticipacion antes de aceptar una evaluación.
 //
+// Los mensajes llevan archivos de hasta 10 MB: el servidor y sus clientes configuran un
+// límite de 11 MB por mensaje (gRPC usa 4 MB por defecto).
+//
 // Los errores viajan como códigos de estado gRPC, no como campos de la respuesta:
-//   NOT_FOUND            la sesión o el material no existe.
-//   ALREADY_EXISTS       el estudiante ya evaluó esa sesión.
-//   PERMISSION_DENIED    quien sube material no es tutor aprobado de ese ramo,
-//                        o la sesión indicada no es de ese tutor.
-//   FAILED_PRECONDITION  la sesión no está FINALIZADA o el estudiante no participó.
-//   INVALID_ARGUMENT     faltan datos o la nota está fuera de 1..5.
+//   NOT_FOUND            el material no existe o el usuario no puede verlo; la sesión no existe.
+//   ALREADY_EXISTS       esa sesión ya fue evaluada.
+//   PERMISSION_DENIED    quien sube no tiene ese ramo activo como tutor, o quien elimina
+//                        no es el dueño del material.
+//   FAILED_PRECONDITION  la sesión no está FINALIZADA o el alumno no participó.
+//   INVALID_ARGUMENT     faltan datos; el archivo supera 10 MB o no es PDF, PNG ni JPEG;
+//                        el aviso no tiene texto; la nota está fuera de 1..5; el comentario
+//                        supera 1000 caracteres; se pidió descargar un aviso.
+//   UNAVAILABLE          Usuarios o Sesiones no responden.
 syntax = "proto3";
 
 package tutorias.material.v1;
@@ -31,11 +42,36 @@ import "google/protobuf/timestamp.proto";
 
 service MaterialService {
   rpc SubirMaterial(SubirMaterialRequest) returns (Material);
-  // Devuelve solo el material que usuario_id puede ver; lo demás se omite, sin error.
+  // Devuelve solo el material que usuario_id puede ver, del más nuevo al más antiguo;
+  // lo demás se omite, sin error. Nunca incluye los bytes de los archivos.
   rpc ListarMaterial(ListarMaterialRequest) returns (ListarMaterialResponse);
+  // Bytes de un archivo, con la misma regla de visibilidad que ListarMaterial.
+  rpc DescargarArchivo(DescargarArchivoRequest) returns (DescargarArchivoResponse);
+  // Solo el dueño. Borra el registro y el archivo.
+  rpc EliminarMaterial(EliminarMaterialRequest) returns (EliminarMaterialResponse);
 
-  rpc Evaluar(EvaluarRequest) returns (Evaluacion);
+  rpc Evaluar(EvaluarRequest) returns (EvaluacionPropia);
+  // Evaluaciones de un tutor, anónimas. Las ve cualquier usuario con sesión iniciada.
   rpc ListarEvaluaciones(ListarEvaluacionesRequest) returns (ListarEvaluacionesResponse);
+  // Evaluaciones escritas por un alumno, para saber qué sesiones ya evaluó.
+  rpc ListarMisEvaluaciones(ListarMisEvaluacionesRequest) returns (ListarMisEvaluacionesResponse);
+  // En lote, para mostrar el promedio de muchos tutores en el buscador con una sola llamada.
+  rpc ObtenerResumenTutores(ObtenerResumenTutoresRequest) returns (ObtenerResumenTutoresResponse);
+}
+
+enum TipoMaterial {
+  // proto3 exige un valor 0; nunca se guarda ni se devuelve.
+  TIPO_MATERIAL_DESCONOCIDO = 0;
+  ARCHIVO = 1;
+  AVISO = 2;
+}
+
+// Datos de un archivo guardado, sin los bytes.
+message Archivo {
+  string nombre = 1;
+  // "application/pdf", "image/png" o "image/jpeg".
+  string tipo_mime = 2;
+  int64 tamano_bytes = 3;
 }
 
 message Material {
@@ -43,51 +79,88 @@ message Material {
   // Dueño del material.
   string tutor_id = 2;
   string ramo_codigo = 3;
-  // Vacío si es material general del ramo.
-  string sesion_id = 4;
+  TipoMaterial tipo = 4;
   string titulo = 5;
-  // Texto o Markdown. Es lo que lee el agente para generar un quiz.
-  string contenido = 6;
-  google.protobuf.Timestamp creado_en = 7;
+  // Solo en AVISO.
+  string texto = 6;
+  // Solo en ARCHIVO.
+  Archivo archivo = 7;
+  google.protobuf.Timestamp creado_en = 8;
+}
+
+// Archivo tal como lo sube el tutor.
+message ArchivoSubido {
+  string nombre = 1;
+  string tipo_mime = 2;
+  // Hasta 10 MB.
+  bytes datos = 3;
 }
 
 message SubirMaterialRequest {
   string tutor_id = 1;
   string ramo_codigo = 2;
-  // Opcional.
-  string sesion_id = 3;
-  string titulo = 4;
-  string contenido = 5;
+  string titulo = 3;
+  // Exactamente uno: texto crea un AVISO, archivo crea un ARCHIVO.
+  oneof contenido {
+    string texto = 4;
+    ArchivoSubido archivo = 5;
+  }
 }
 
 // tutor_id y ramo_codigo son filtros opcionales: un campo vacío no filtra.
 message ListarMaterialRequest {
-  string tutor_id = 1;
-  string ramo_codigo = 2;
   // Quién consulta. Obligatorio: define qué material es visible.
-  string usuario_id = 3;
+  string usuario_id = 1;
+  string tutor_id = 2;
+  string ramo_codigo = 3;
 }
 
 message ListarMaterialResponse {
   repeated Material materiales = 1;
 }
 
-message Evaluacion {
+message DescargarArchivoRequest {
   string id = 1;
-  string sesion_id = 2;
-  string tutor_id = 3;
-  string estudiante_id = 4;
-  // Entero de 1 a 5.
-  int32 nota = 5;
-  string comentario = 6;
-  google.protobuf.Timestamp creada_en = 7;
+  string usuario_id = 2;
 }
+
+message DescargarArchivoResponse {
+  Archivo archivo = 1;
+  bytes datos = 2;
+}
+
+message EliminarMaterialRequest {
+  string id = 1;
+  string tutor_id = 2;
+}
+
+message EliminarMaterialResponse {}
 
 message EvaluarRequest {
   string sesion_id = 1;
   string estudiante_id = 2;
+  // Entero de 1 a 5.
   int32 nota = 3;
+  // Opcional, hasta 1000 caracteres.
   string comentario = 4;
+}
+
+// Vista pública de una evaluación: sin quién la escribió ni de qué sesión es.
+message EvaluacionAnonima {
+  string ramo_codigo = 1;
+  int32 nota = 2;
+  string comentario = 3;
+  google.protobuf.Timestamp creada_en = 4;
+}
+
+// Una evaluación vista por el alumno que la escribió.
+message EvaluacionPropia {
+  string sesion_id = 1;
+  string tutor_id = 2;
+  string ramo_codigo = 3;
+  int32 nota = 4;
+  string comentario = 5;
+  google.protobuf.Timestamp creada_en = 6;
 }
 
 message ListarEvaluacionesRequest {
@@ -95,7 +168,33 @@ message ListarEvaluacionesRequest {
 }
 
 message ListarEvaluacionesResponse {
-  repeated Evaluacion evaluaciones = 1;
+  // De la más nueva a la más antigua.
+  repeated EvaluacionAnonima evaluaciones = 1;
   // 0 si el tutor no tiene evaluaciones.
   double promedio = 2;
+  int32 cantidad = 3;
+}
+
+message ListarMisEvaluacionesRequest {
+  string estudiante_id = 1;
+}
+
+message ListarMisEvaluacionesResponse {
+  repeated EvaluacionPropia evaluaciones = 1;
+}
+
+message ResumenTutor {
+  string tutor_id = 1;
+  // 0 si el tutor no tiene evaluaciones.
+  double promedio = 2;
+  int32 cantidad = 3;
+}
+
+message ObtenerResumenTutoresRequest {
+  repeated string tutor_ids = 1;
+}
+
+message ObtenerResumenTutoresResponse {
+  // Uno por cada id pedido, incluidos los que no tienen evaluaciones.
+  repeated ResumenTutor resumenes = 1;
 }

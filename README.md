@@ -20,15 +20,15 @@ En GitHub Actions, el checkout necesita `submodules: true`.
 | `eventos/sesion.*.json` | Sesiones publica | Material consume |
 | `rest/agente.md` | Agente (Pablo) | BFF |
 
-## Propuestas en revisión
+## Propuestas
 
-`propuestas/` tiene las decisiones acordadas en equipo y los contratos propuestos que todavía no reemplazan a los de `proto/`. Leerlas antes de implementar o cambiar esos servicios:
+`propuestas/` tiene las decisiones acordadas en equipo y explica el porqué de cada contrato. Los tres `.proto` de `proto/` ya son los de estas propuestas (Usuarios agrega las opciones de Java para Sesiones). Leerlas antes de implementar o cambiar esos servicios:
 
 - `propuestas/usuarios.md`: un usuario alumno y tutor a la vez, login único con dos portales, `es_tutor`, inscripción y retiro de ramos; esquema de PostgreSQL y `usuarios.proto` propuesto.
 - `propuestas/material.md`: archivos y avisos, quién ve el material, evaluaciones anónimas y promedio de tutores; modelo de MongoDB y `material.proto` propuesto.
 - `propuestas/sesiones.md`: casillas de disponibilidad con los bloques de clase de la universidad (90 minutos), reservas, confirmación, fin automático y validaciones; migración V3 y cambios a `sesiones.proto`.
 
-Cuando una propuesta se aprueba, su `.proto` reemplaza al de `proto/` en un PR aparte.
+Una propuesta nueva sigue el mismo camino: primero se acuerda en `propuestas/`, y cuando se aprueba, su `.proto` reemplaza al de `proto/` en un PR aparte.
 
 ## Kafka
 

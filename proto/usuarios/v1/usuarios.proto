@@ -1,39 +1,60 @@
 // Contrato gRPC del servicio de Usuarios.
-// Lo implementa Usuarios (Go, Pablo) y lo consumen el BFF, Sesiones y el agente.
+// Lo implementa Usuarios (Go, Pablo) y lo consumen el BFF, Sesiones, Material y el agente.
 //
-// BORRADOR para revisar en equipo.
+// Un mismo usuario puede ser alumno y tutor a la vez. Es tutor de un ramo cuando se
+// inscribió en él con el formulario de verificación (AgregarRamosTutor) y no lo ha quitado.
+// es_tutor es verdadero si tiene al menos un ramo activo; solo se lee, nunca se escribe.
 //
-// Todos son estudiantes; un usuario es tutor de un ramo cuando lo declaró aprobado.
+// Los RPC que modifican la cuenta reciben usuario_id del BFF, que lo saca del JWT.
 //
 // Los errores viajan como códigos de estado gRPC, no como campos de la respuesta:
-//   NOT_FOUND          el usuario o el ramo no existe.
-//   ALREADY_EXISTS     ya hay un usuario con ese email.
+//   NOT_FOUND          el usuario no existe, el ramo no está en el catálogo, o el usuario
+//                      no está inscrito en el ramo que quiere quitar o reactivar.
+//   ALREADY_EXISTS     ya hay un usuario con ese email, o ya está inscrito en ese ramo
+//                      (si lo quitó, se usa ReactivarRamoTutor).
 //   UNAUTHENTICATED    email o contraseña incorrectos.
-//   INVALID_ARGUMENT   faltan datos o tienen mal formato.
+//   INVALID_ARGUMENT   faltan datos o tienen mal formato, la nota está fuera de 4.0..7.0
+//                      o el periodo no tiene la forma "2025-2".
 syntax = "proto3";
 
 package tutorias.usuarios.v1;
 
 option go_package = "github.com/tutormatch/usuarios/gen/usuariosv1";
+// Para Sesiones (Spring Boot), que es cliente de ValidarTutorRamo.
+option java_multiple_files = true;
+option java_package = "cl.tutorias.usuarios.grpc";
 
 service UsuariosService {
-  // Usados por el BFF.
-  rpc Registrar(RegistrarRequest) returns (Usuario);
-  // Devuelve un JWT firmado (HS256) con el id del usuario en "sub".
-  // El BFF lo verifica con el mismo secreto (variable JWT_SECRET, Secret de Kubernetes).
-  rpc IniciarSesion(IniciarSesionRequest) returns (IniciarSesionResponse);
+  // Crea la cuenta y deja la sesión iniciada: responde igual que Login.
+  rpc RegistroUsuario(RegistroUsuarioRequest) returns (LoginResponse);
+  // Devuelve un JWT firmado (HS256) con el id del usuario en "sub" y el vencimiento en
+  // "exp" (24 horas). No lleva rol. El BFF lo verifica con el mismo secreto (variable
+  // JWT_SECRET, Secret de Kubernetes) y rechaza los tokens vencidos.
+  rpc Login(LoginRequest) returns (LoginResponse);
+
   rpc ObtenerUsuario(ObtenerUsuarioRequest) returns (Usuario);
-  // En lote: el BFF muestra el nombre del tutor y del estudiante de muchas sesiones con una sola llamada.
+  // En lote, para mostrar el tutor y el alumno de muchas sesiones con una sola llamada.
   // Los ids que no existen se omiten de la respuesta, sin error.
   rpc ObtenerUsuarios(ObtenerUsuariosRequest) returns (ObtenerUsuariosResponse);
-  // Reemplaza la lista completa de ramos aprobados del usuario.
-  rpc ActualizarRamos(ActualizarRamosRequest) returns (Usuario);
-  rpc BuscarTutores(BuscarTutoresRequest) returns (BuscarTutoresResponse);
+
+  // Formulario de verificación: inscribe al usuario como tutor de uno o más ramos.
+  // Todo o nada: si un ramo falla, no se inscribe ninguno.
+  rpc AgregarRamosTutor(AgregarRamosTutorRequest) returns (Usuario);
+  // Deja de impartir un ramo. Conserva la inscripción para poder reactivarla.
+  // Quitar un ramo ya inactivo no hace nada y no es error.
+  rpc QuitarRamoTutor(CambiarRamoTutorRequest) returns (Usuario);
+  // Vuelve a impartir un ramo que había quitado, sin repetir el formulario.
+  // Reactivar un ramo ya activo no hace nada y no es error.
+  rpc ReactivarRamoTutor(CambiarRamoTutorRequest) returns (Usuario);
+
   // Catálogo de ramos, para los selectores del front.
   rpc ListarRamos(ListarRamosRequest) returns (ListarRamosResponse);
+  // Tutores con ese ramo activo. Lo usan el buscador de alumnos y el agente.
+  rpc ListarTutoresPorRamo(ListarTutoresPorRamoRequest) returns (ListarTutoresPorRamoResponse);
 
-  // Usado por Sesiones antes de crear una reserva.
-  rpc VerificarTutorRamo(VerificarTutorRamoRequest) returns (VerificarTutorRamoResponse);
+  // Usado por Sesiones (al crear una reserva y al marcar disponibilidad) y por Material
+  // (al subir material). valido es true solo si el usuario existe y tiene ese ramo activo.
+  rpc ValidarTutorRamo(ValidarTutorRamoRequest) returns (ValidarTutorRamoResponse);
 }
 
 message Ramo {
@@ -42,26 +63,37 @@ message Ramo {
   string nombre = 2;
 }
 
+// Un ramo en el que el usuario se inscribió como tutor.
+message RamoTutor {
+  Ramo ramo = 1;
+  // false si el tutor lo quitó; se muestra para que pueda reactivarlo.
+  bool activo = 2;
+}
+
 message Usuario {
   // UUID. Es el tutor_id / estudiante_id que guardan Sesiones y Material.
   string id = 1;
   string nombre = 2;
   string email = 3;
-  repeated Ramo ramos_aprobados = 4;
+  // Verdadero si tiene al menos un ramo activo. El front lo usa para elegir el portal.
+  bool es_tutor = 4;
+  repeated RamoTutor ramos = 5;
+  // Pendiente: datos personales que pida el formulario de registro, con números nuevos.
 }
 
-message RegistrarRequest {
+message RegistroUsuarioRequest {
   string nombre = 1;
   string email = 2;
   string password = 3;
+  // Pendiente: datos personales que pida el formulario de registro, con números nuevos.
 }
 
-message IniciarSesionRequest {
+message LoginRequest {
   string email = 1;
   string password = 2;
 }
 
-message IniciarSesionResponse {
+message LoginResponse {
   string token = 1;
   Usuario usuario = 2;
 }
@@ -78,17 +110,23 @@ message ObtenerUsuariosResponse {
   repeated Usuario usuarios = 1;
 }
 
-message ActualizarRamosRequest {
-  string usuario_id = 1;
-  repeated string ramo_codigos = 2;
-}
-
-message BuscarTutoresRequest {
+// Datos del formulario de verificación para un ramo.
+message InscripcionRamo {
   string ramo_codigo = 1;
+  // Escala chilena, de 4.0 a 7.0.
+  double nota_aprobacion = 2;
+  // Año y semestre, ej. "2025-2".
+  string periodo_aprobacion = 3;
 }
 
-message BuscarTutoresResponse {
-  repeated Usuario tutores = 1;
+message AgregarRamosTutorRequest {
+  string usuario_id = 1;
+  repeated InscripcionRamo ramos = 2;
+}
+
+message CambiarRamoTutorRequest {
+  string usuario_id = 1;
+  string ramo_codigo = 2;
 }
 
 message ListarRamosRequest {}
@@ -97,12 +135,19 @@ message ListarRamosResponse {
   repeated Ramo ramos = 1;
 }
 
-message VerificarTutorRamoRequest {
+message ListarTutoresPorRamoRequest {
+  string ramo_codigo = 1;
+}
+
+message ListarTutoresPorRamoResponse {
+  repeated Usuario tutores = 1;
+}
+
+message ValidarTutorRamoRequest {
   string tutor_id = 1;
   string ramo_codigo = 2;
 }
 
-message VerificarTutorRamoResponse {
-  bool existe = 1;
-  bool aprobo_ramo = 2;
+message ValidarTutorRamoResponse {
+  bool valido = 1;
 }

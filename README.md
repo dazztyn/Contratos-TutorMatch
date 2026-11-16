@@ -26,6 +26,7 @@ En GitHub Actions, el checkout necesita `submodules: true`.
 
 - `propuestas/usuarios.md`: un usuario alumno y tutor a la vez, login único con dos portales, `es_tutor`, inscripción y retiro de ramos; esquema de PostgreSQL y `usuarios.proto` propuesto.
 - `propuestas/material.md`: archivos y avisos, quién ve el material, evaluaciones anónimas y promedio de tutores; modelo de MongoDB y `material.proto` propuesto.
+- `propuestas/sesiones.md`: casillas de disponibilidad con los bloques de clase de la universidad (90 minutos), reservas, confirmación, fin automático y validaciones; migración V3 y cambios a `sesiones.proto`.
 
 Cuando una propuesta se aprueba, su `.proto` reemplaza al de `proto/` en un PR aparte.
 

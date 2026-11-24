@@ -1,46 +1,60 @@
 # Contrato REST del agente (MCP server)
 
-BORRADOR para revisar en equipo. Lo implementa el agente (Pablo) y lo consume el BFF.
+Lo implementa el agente (`tutormatch-agente`, Go, Pablo) y lo consume el BFF (`AGENTE_URL`, por defecto `http://localhost:8081` en local y `http://agente:8081` en Kubernetes).
 
 ## `POST /agent/chat`
 
-El BFF ya verificó el token, así que envía el id del usuario en el cuerpo. El agente actúa siempre en nombre de ese usuario (por ejemplo, al crear una reserva, `usuarioId` es el estudiante).
+El BFF valida el JWT, envía el `usuarioId` en el cuerpo y **reenvía la cabecera `Authorization: Bearer <token>`** para que el agente la propague al llamar al BFF por GraphQL (`BFF_URL`). De esta forma, el BFF sigue siendo quien determina la identidad del estudiante al crear una reserva.
+
+Cabeceras:
+- `Content-Type: application/json`
+- `Authorization: Bearer <token>`
 
 Petición:
-
 ```json
 {
   "usuarioId": "a1b2c3d4-0000-4000-8000-000000000002",
-  "conversacionId": "c-123",
+  "conversacionId": "conv-123",
   "mensaje": "Necesito ayuda con Cálculo II el jueves en la tarde"
 }
 ```
 
-`conversacionId` es opcional: si falta, el agente abre una conversación nueva y devuelve su id.
+`conversacionId` es opcional (máx. 128 caracteres): si falta, el agente abre una conversación nueva y devuelve su id. Las conversaciones se guardan indexadas por usuario y conversación (`usuarioId + conversacionId`), por lo que un usuario no puede acceder al historial de otro.
 
 Respuesta `200`:
-
 ```json
 {
-  "conversacionId": "c-123",
-  "respuesta": "Encontré 2 tutores con MAT1610 disponibles el jueves de 15:00 a 18:00...",
+  "conversacionId": "conv-123",
+  "respuesta": "Encontré opciones disponibles para Cálculo II...",
   "acciones": [
     { "tipo": "sesion.creada", "id": "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90" }
   ]
 }
 ```
 
-`acciones` lista lo que el agente hizo en el sistema, para que el front refresque esas vistas. Vacío si solo conversó.
+`acciones` es una lista vacía `[]` si el agente solo conversó, o incluye `{ "tipo": "sesion.creada", "id": "<sesionId>" }` cuando creó una reserva para que el frontend refresque las vistas.
 
-Errores: `400` si falta `usuarioId` o `mensaje`; `503` si el modelo de IA no responde.
+Errores:
+- `400`: falta `usuarioId` o `mensaje`, el mensaje excede 2000 caracteres o `conversacionId` excede 128 caracteres.
+- `429`: límite de solicitudes por usuario excedido.
+- `503`: el modelo de IA no responde.
+- `504`: el agente superó el máximo de pasos permitidos.
 
-## Tools que expone el MCP server
+## Tools MCP (`POST /mcp`)
 
-| Tool | Llama a |
+Las tools consumen el esquema GraphQL real del BFF (`BFF_URL`) usando bloques universitarios de 90 minutos (A–F, hora de Chile `America/Santiago`, enviados en UTC):
+
+| Tool | Operación en el BFF |
 |---|---|
-| `buscar_tutores(ramoCodigo)` | `Usuarios.BuscarTutores` |
-| `ver_disponibilidad(tutorId)` | `Sesiones.ObtenerDisponibilidad` |
-| `crear_reserva(tutorId, ramoCodigo, inicio, fin)` | `Sesiones.CrearSesion` |
-| `generar_quiz(ramoCodigo)` | `Material.ListarMaterial` + el modelo |
+| `listar_ramos()` | `Query.ramos` |
+| `buscar_tutores(ramo_codigo)` | `Query.tutoresPorRamo` |
+| `buscar_disponibilidad(ramo_codigo, desde, hasta)` | `Query.buscarDisponibilidad` |
+| `ver_disponibilidad(tutor_id, desde, hasta)` | `Query.disponibilidad` |
+| `crear_reserva(tutor_id, ramo_codigo, inicio)` | `Mutation.crearSesion` (exige `Authorization`) |
 
-Las tools llaman a los servicios por gRPC directo con los `.proto` de este repo.
+`generar_quiz` queda postergada mientras Material no extraiga texto de los archivos.
+
+## Restricciones de operación en Kubernetes
+
+- **Réplica única (`replicas: 1`):** El historial de conversaciones vive en memoria (caché LRU con expiración TTL) y se pierde si el pod se reinicia. El Deployment debe correr con una sola réplica para evitar que los turnos de una misma conversación caigan en pods distintos (escalar horizontalmente requeriría mover el store a Redis).
+- **Red interna (`ClusterIP`):** El Service `agente:8081` **no debe exponerse fuera del clúster**, porque `/mcp` acepta `X-Usuario-Id` directamente y está pensado solo para uso interno.

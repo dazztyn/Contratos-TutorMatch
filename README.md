@@ -10,6 +10,18 @@ git clone --recurse-submodules <url-del-servicio>
 
 En GitHub Actions, el checkout necesita `submodules: true`.
 
+## Repositorios del proyecto
+
+| Componente | Repositorio | Responsable | Tecnología |
+|---|---|---|---|
+| Frontend | [IenZAVALA-S/tutormatch-front](https://github.com/IenZAVALA-S/tutormatch-front) | Ien | React + Apollo Client |
+| BFF | [dazztyn/BFF-TutorMatch](https://github.com/dazztyn/BFF-TutorMatch) | Vicente | NestJS + GraphQL |
+| Usuarios | [pablofgx-code/tutormatch-usuarios](https://github.com/pablofgx-code/tutormatch-usuarios) | Pablo | Go + PostgreSQL |
+| Sesiones | [dazztyn/Sesiones-TutorMatch](https://github.com/dazztyn/Sesiones-TutorMatch) | Vicente | Spring Boot + PostgreSQL |
+| Material y evaluaciones | [IenZAVALA-S/tutormatch-material](https://github.com/IenZAVALA-S/tutormatch-material) | Ien | NestJS + MongoDB |
+| Agente (MCP) | [pablofgx-code/tutormatch-agente](https://github.com/pablofgx-code/tutormatch-agente) | Pablo | Go + Gemini |
+| Contratos (este repo) | [dazztyn/Contratos-TutorMatch](https://github.com/dazztyn/Contratos-TutorMatch) | Todo el equipo | `.proto`, eventos Kafka y contrato REST del agente |
+
 ## Contenido
 
 | Archivo | Lo implementa | Lo consumen |
